@@ -6414,7 +6414,7 @@ window.J_DICT = [["a","관","하나의, 어떤","m"],["able","a","~할 수 있�
       grid.appendChild(J.html(
         '<section class="panel" aria-labelledby="h-info">' +
           '<h2 id="h-info">정보</h2>' +
-          '<p>자비스 v8 · 패드 속 AI, 단어 추가, 명언 217개 · 풍경 테마, 엣지러너, 배치 9종, 시계 모드, 음악, 숙어</p>' +
+          '<p>자비스 v8.1 · 패드 속 AI, 단어 추가, 명언 217개 · 풍경 테마, 엣지러너, 배치 9종, 시계 모드, 음악, 숙어</p>' +
           '<p class="muted" id="infoCounts"></p>' +
           '<p class="muted" id="infoStorage"></p>' +
         '</section>'
@@ -7364,7 +7364,13 @@ window.J_DICT = [["a","관","하나의, 어떤","m"],["able","a","~할 수 있�
   var history = [];
   var busy = false;
 
-  function fullId(base) { return base + (gpu.f16 ? "-q4f16_1-MLC" : "-q4f32_1-MLC"); }
+  function fullId(base) { return base + (gpu.f16 && !A.compat ? "-q4f16_1-MLC" : "-q4f32_1-MLC"); }
+  function isGpuErr(err) { return /mapAsync|GPUBuffer|GPU|device|lost|Out of memory|OOM/i.test(String(err && err.message || err)); }
+  function reset() {
+    var e = engine;
+    engine = null; loadedId = null; loading = null;
+    if (e) { try { e.unload(); } catch (x) {} }
+  }
   function modelInfo(id) { return MODELS.filter(function (m) { return m.id === id; })[0] || MODELS[1]; }
 
   function checkGPU() {
@@ -7429,11 +7435,14 @@ window.J_DICT = [["a","관","하나의, 어떤","m"],["able","a","~할 수 있�
     if (busy) { J.say("잠깐, 아직 대답하는 중이야."); return; }
     busy = true;
     var put = J._sayLive ? J._sayLive() : function (t) { J.say(t); };
+    history.push({ role: "user", content: text });
+    while (history.length > 8) history.shift();
+    attempt(put, 0);
+  }
+  function attempt(put, tries) {
     var waking = !engine;
     put(waking ? "AI를 깨우는 중… (처음엔 시간이 좀 걸려)" : "…");
     load(function (p) { if (waking) put("AI를 깨우는 중… " + Math.round(p * 100) + "%"); }).then(function (e) {
-      history.push({ role: "user", content: text });
-      while (history.length > 8) history.shift();
       var msgs = [{ role: "system", content: systemPrompt() }].concat(history);
       return e.chat.completions.create({ messages: msgs, stream: true, temperature: 0.6, max_tokens: 320 });
     }).then(function (stream) {
@@ -7451,9 +7460,21 @@ window.J_DICT = [["a","관","하나의, 어떤","m"],["able","a","~할 수 있�
         history.push({ role: "assistant", content: out });
         if (!out.trim()) put("(대답이 비어 있어. 다시 물어봐줘.)");
       });
-    })["catch"](function (err) {
-      put("AI를 쓸 수 없어: " + (err && err.message ? err.message : err) + "\n도구 → AI 화면에서 상태를 확인해봐.");
-    }).then(function () { busy = false; drawStatus(); });
+    }).then(function () { busy = false; drawStatus(); }, function (err) {
+      if (isGpuErr(err) && tries < 2) {
+        // 그래픽 칩 오류: AI를 내렸다가 다시 올린다. 두 번째엔 호환 모드로 바꿔서 시도
+        reset();
+        if (tries === 1 && !A.compat && gpu.f16) { A.compat = true; J.save(); }
+        put("그래픽 칩에서 문제가 생겨서 AI를 다시 올리는 중…" + (A.compat ? " (호환 모드)" : ""));
+        setTimeout(function () { attempt(put, tries + 1); }, 600);
+        return;
+      }
+      busy = false;
+      put("AI를 쓸 수 없어: " + (err && err.message ? err.message : err) +
+        (isGpuErr(err) ? "\n패드 메모리가 부족한 것 같아. 도구 → AI에서 '보통'이나 '가볍게'로 바꿔봐. 다른 앱을 닫고 하면 더 좋아." : "\n도구 → AI 화면에서 상태를 확인해봐."));
+      if (history.length && history[history.length - 1].role === "user") history.pop();
+      drawStatus();
+    });
   }
 
   /* ---------- 화면 ---------- */
@@ -7475,6 +7496,7 @@ window.J_DICT = [["a","관","하나의, 어떤","m"],["able","a","~할 수 있�
           '<p class="muted" id="aiProg"></p>' +
           '<div class="row"><button class="btn primary grow" type="button" id="aiLoad">AI 받기 / 깨우기</button></div>' +
           '<label class="toggle"><input type="checkbox" id="aiFallback"> 명령창에서 못 알아들은 말은 AI가 대답하기</label>' +
+          '<label class="toggle"><input type="checkbox" id="aiCompat"> 호환 모드 (오류가 날 때 켜기. 조금 느리고 파일을 새로 받아)</label>' +
           '<p class="muted">AI한테 바로 물어보려면 명령창에 <b>?</b>나 <b>AI야</b>로 시작해서 써. 예) ? 광합성 쉽게 설명해줘</p>' +
         '</section>'
       ));
@@ -7504,10 +7526,12 @@ window.J_DICT = [["a","관","하나의, 어떤","m"],["able","a","~할 수 있�
           J.$("aiBar").style.width = "100%";
           J.$("aiProg").textContent = "준비 완료! 홈 명령창에서 말 걸어봐.";
         })["catch"](function (err) {
-          J.$("aiProg").textContent = "실패: " + (err && err.message ? err.message : err);
+          reset();
+          J.$("aiProg").textContent = "실패: " + (err && err.message ? err.message : err) + (isGpuErr(err) ? " → '보통'으로 바꾸거나 호환 모드를 켜고 다시 해봐." : "");
         }).then(function () { btn.disabled = false; drawStatus(); drawStore(); });
       });
       J.$("aiFallback").addEventListener("change", function (e) { A.fallback = e.target.checked; J.save(); });
+      J.$("aiCompat").addEventListener("change", function (e) { A.compat = e.target.checked; J.save(); reset(); drawStatus(); });
       J.$("aiForget").addEventListener("click", function () { history = []; J.$("aiProg").textContent = "대화 기억을 지웠어."; });
       J.$("aiDelete").addEventListener("click", function () {
         var b = J.$("aiDelete");
@@ -7549,7 +7573,7 @@ window.J_DICT = [["a","관","하나의, 어떤","m"],["able","a","~할 수 있�
       b.setAttribute("aria-pressed", A.model === m.id ? "true" : "false");
       b.appendChild(J.el("b", null, m.label));
       b.appendChild(J.el("span", null, m.size + " · " + m.note));
-      b.addEventListener("click", function () { A.model = m.id; J.save(); drawModels(); drawStatus(); });
+      b.addEventListener("click", function () { if (A.model !== m.id) { A.model = m.id; J.save(); reset(); } drawModels(); drawStatus(); });
       box.appendChild(b);
     });
   }
@@ -7564,6 +7588,7 @@ window.J_DICT = [["a","관","하나의, 어떤","m"],["able","a","~할 수 있�
     drawStatus();
     drawStore();
     J.$("aiFallback").checked = !!A.fallback;
+    J.$("aiCompat").checked = !!A.compat;
     checkGPU().then(function (g) {
       J.$("aiGpu").className = "ai-gpu " + (g.ok ? "ok" : "bad");
       J.$("aiGpu").textContent = g.ok ? "✓ 이 기기에서 AI를 돌릴 수 있어 (" + g.info + (g.f16 ? ", 빠른 모드" : "") + ")" : "✕ " + g.info + " 크롬을 최신으로 업데이트해봐.";
