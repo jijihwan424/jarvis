@@ -1,5 +1,5 @@
 // 자비스 오프라인 캐시. 앱 파일을 고치면 CACHE 이름의 숫자를 올려줘야 새 버전이 반영돼.
-var CACHE = "jarvis-v10";
+var CACHE = "jarvis-v11";
 var FILES = [
   "./",
   "./index.html",
