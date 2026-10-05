@@ -888,6 +888,17 @@ body.has-mini { padding-bottom: calc(var(--tabbar-h) + 64px + env(safe-area-inse
 body.focus-on .mini-player { display: none; }
 :root[data-style="edge"] .mini-player { border-radius: 0; border-color: var(--yl); clip-path: polygon(0 0, calc(100% - 12px) 0, 100% 12px, 100% 100%, 0 100%); }
 
+/* ===== AI ===== */
+.ai-gpu { padding: 10px 12px; border-radius: var(--radius); border: 1px solid var(--line); font-size: 14px; }
+.ai-gpu.ok { border-color: var(--ok, #3fb37f); color: var(--ok, #3fb37f); }
+.ai-gpu.bad { border-color: var(--danger); color: var(--danger); }
+.ai-models { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; }
+.ai-model { font: inherit; text-align: left; cursor: pointer; padding: 10px; display: flex; flex-direction: column; gap: 2px; border: 2px solid var(--line); border-radius: var(--radius); background: var(--panel-2); color: var(--ink); }
+.ai-model[aria-pressed="true"] { border-color: var(--accent); }
+.ai-model span { font-size: 12px; color: var(--muted); }
+.ai-bar { height: 8px; }
+.ai-notes { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 6px; font-size: 14px; color: var(--muted); }
+
 </style>
 </head>
 <body>
@@ -2943,8 +2954,13 @@ window.J_DICT = [["a","관","하나의, 어떤","m"],["able","a","~할 수 있�
       logEl.appendChild(d);
       while (logEl.children.length > 40) logEl.removeChild(logEl.firstChild);
       logEl.scrollTop = logEl.scrollHeight;
+      return d;
     }
     J._say = function (msg) { addMsg("ai", msg); };
+    J._sayLive = function () {
+      var d = addMsg("ai", "");
+      return function (t) { d.textContent = t; logEl.scrollTop = logEl.scrollHeight; };
+    };
     J._echo = function (msg) { addMsg("me", msg); };
     J.$("cmdForm").addEventListener("submit", function (e) {
       e.preventDefault();
@@ -2954,8 +2970,11 @@ window.J_DICT = [["a","관","하나의, 어떤","m"],["able","a","~할 수 있�
       addMsg("me", line);
       J.audio.ensure();
       if (J.cmdTreeTakeInput && J.cmdTreeTakeInput(line)) return;
+      var direct = /^(\?|？|ai야|AI야|자비스야\s*AI)\s*/i.exec(line);
+      if (direct && J.ai) { J.ai.ask(line.slice(direct[0].length) || "안녕"); return; }
       if (!J.understand(line) && !J.run(line)) {
-        J.say("그건 아직 못 알아들어. 이렇게 말해볼래?\n예) 10분 뒤에 알려줘 · 숙제 할일에 넣어줘 · 2번 다 했어 · 준비물 메모해줘 · 3 더하기 5");
+        if (J.ai && J.ai.fallback()) { J.ai.ask(line); return; }
+        J.say("그건 아직 못 알아들어. 이렇게 말해볼래?\n예) 10분 뒤에 알려줘 · 숙제 할일에 넣어줘 · 2번 다 했어 · 준비물 메모해줘 · 3 더하기 5" + (J.ai && !J.ai.available() ? "\n(도구 → AI에서 AI를 받으면 아무 말이나 대답해줄 수 있어)" : ""));
       }
     });
   }
@@ -5976,7 +5995,7 @@ window.J_DICT = [["a","관","하나의, 어떤","m"],["able","a","~할 수 있�
   var J = window.J;
   var MENU = [
     ["tt", "시간표"], ["meal", "급식"], ["cal", "달력"], ["dday", "D-day"], ["todo", "할 일·메모"], ["diary", "일기"],
-    ["money", "가계부"], ["growth", "성장"], ["time", "시간 (타이머·뽀모도로)"], ["calc", "계산기"], ["dict", "영어사전"], ["music", "음악"]
+    ["money", "가계부"], ["growth", "성장"], ["time", "시간 (타이머·뽀모도로)"], ["calc", "계산기"], ["dict", "영어사전"], ["music", "음악"], ["ai", "AI"]
   ];
 
   J.tab({
@@ -6395,7 +6414,7 @@ window.J_DICT = [["a","관","하나의, 어떤","m"],["able","a","~할 수 있�
       grid.appendChild(J.html(
         '<section class="panel" aria-labelledby="h-info">' +
           '<h2 id="h-info">정보</h2>' +
-          '<p>자비스 v7.1 · 단어 추가, 명언 217개 · 풍경 테마, 엣지러너, 배치 9종, 시계 모드, 음악, 숙어</p>' +
+          '<p>자비스 v8 · 패드 속 AI, 단어 추가, 명언 217개 · 풍경 테마, 엣지러너, 배치 9종, 시계 모드, 음악, 숙어</p>' +
           '<p class="muted" id="infoCounts"></p>' +
           '<p class="muted" id="infoStorage"></p>' +
         '</section>'
@@ -7322,6 +7341,242 @@ window.J_DICT = [["a","관","하나의, 어떤","m"],["able","a","~할 수 있�
 
   loadList(function () { J.save(); draw(); });
   try { if (navigator.storage && navigator.storage.persist) navigator.storage.persist(); } catch (e) {}
+})();
+
+/* ===== 도구 > AI: 패드 안에서 돌아가는 작은 AI (WebLLM + WebGPU) =====
+   처음 한 번만 인터넷으로 모델을 받고, 그다음부터는 인터넷 없이 대화한다.
+   명령어 창에서 자비스가 못 알아들은 말은 AI가 대신 대답한다. */
+(function () {
+  var J = window.J;
+  var LIB = "https://cdn.jsdelivr.net/npm/@mlc-ai/web-llm@0.2.85/+esm";
+  var MODELS = [
+    { id: "Qwen2.5-0.5B-Instruct", label: "가볍게 (0.5B)", size: "약 0.4GB", note: "제일 빠르지만 말이 좀 엉성해" },
+    { id: "Qwen2.5-1.5B-Instruct", label: "보통 (1.5B)", size: "약 1GB", note: "속도와 똑똑함의 균형, 추천" },
+    { id: "gemma-2-2b-it", label: "똑똑하게 (2B)", size: "약 1.4GB", note: "한국어가 제일 자연스럽지만 느려" }
+  ];
+  if (!J.data.ai || typeof J.data.ai !== "object") J.data.ai = {};
+  var A = J.data.ai;
+  if (!A.model) A.model = "Qwen2.5-1.5B-Instruct";
+  if (A.fallback == null) A.fallback = true;
+
+  var lib = null, engine = null, loadedId = null, loading = null;
+  var gpu = { checked: false, ok: false, f16: false, info: "" };
+  var history = [];
+  var busy = false;
+
+  function fullId(base) { return base + (gpu.f16 ? "-q4f16_1-MLC" : "-q4f32_1-MLC"); }
+  function modelInfo(id) { return MODELS.filter(function (m) { return m.id === id; })[0] || MODELS[1]; }
+
+  function checkGPU() {
+    if (gpu.checked) return Promise.resolve(gpu);
+    gpu.checked = true;
+    if (!navigator.gpu) { gpu.info = "이 브라우저는 WebGPU를 지원하지 않아."; return Promise.resolve(gpu); }
+    return navigator.gpu.requestAdapter().then(function (ad) {
+      if (!ad) { gpu.info = "그래픽 장치를 찾지 못했어."; return gpu; }
+      gpu.ok = true;
+      gpu.f16 = ad.features && ad.features.has("shader-f16");
+      var inf = ad.info || {};
+      gpu.info = [inf.vendor, inf.architecture, inf.description].filter(Boolean).join(" · ") || "WebGPU 사용 가능";
+      return gpu;
+    })["catch"](function (e) { gpu.info = "WebGPU 확인 실패: " + (e && e.message || e); return gpu; });
+  }
+
+  function load(onProgress) {
+    if (engine && loadedId === fullId(A.model)) return Promise.resolve(engine);
+    if (loading) return loading;
+    loading = checkGPU().then(function () {
+      if (!gpu.ok) throw new Error(gpu.info || "WebGPU가 없어");
+      return lib ? lib : import(LIB).then(function (m) { lib = m; return m; });
+    }).then(function (m) {
+      var id = fullId(A.model);
+      var cb = function (r) { if (onProgress) onProgress(r.progress || 0, r.text || ""); };
+      if (engine) { return engine.reload(id).then(function () { loadedId = id; return engine; }); }
+      return m.CreateMLCEngine(id, { initProgressCallback: cb }).then(function (e) { engine = e; loadedId = id; return e; });
+    }).then(function (e) {
+      loading = null;
+      A.ready = true;
+      J.save();
+      return e;
+    }, function (err) {
+      loading = null;
+      throw err;
+    });
+    return loading;
+  }
+
+  function context() {
+    var d = new Date();
+    var DN = ["일", "월", "화", "수", "목", "금", "토"];
+    var bits = [];
+    bits.push("지금: " + d.getFullYear() + "년 " + (d.getMonth() + 1) + "월 " + d.getDate() + "일 " + DN[d.getDay()] + "요일 " + J.pad2(d.getHours()) + ":" + J.pad2(d.getMinutes()));
+    try { var b = J.tt && J.tt.banner(); if (b) bits.push("수업: " + b.filter(Boolean).join(" / ")); } catch (e) {}
+    try {
+      var todos = (J.data.todos || []).filter(function (t) { return !t.done; }).slice(0, 6).map(function (t) { return t.text; });
+      if (todos.length) bits.push("남은 할 일: " + todos.join(", "));
+    } catch (e) {}
+    try { var dd = J.cal && J.cal.ddays().slice(0, 3); if (dd && dd.length) bits.push("D-day: " + dd.map(function (e) { return e.title + " " + J.cal.ddayLabel(e.date); }).join(", ")); } catch (e) {}
+    return bits.join("\n");
+  }
+  function systemPrompt() {
+    var name = (J.data.home && J.data.home.name) || "";
+    return "너는 '자비스'라는 개인 비서 AI야. 사용자" + (name ? "의 이름은 " + name + "이고" : "는") + " 고등학생이야. " +
+      "항상 한국어 반말로, 친구처럼 짧고 분명하게 대답해. 3~5문장 안에서 끝내. 모르는 건 모른다고 솔직히 말해. " +
+      "지어낸 사실을 말하지 마. 너는 인터넷에 연결되어 있지 않아서 최신 뉴스나 날씨는 몰라.\n\n[지금 상황]\n" + context();
+  }
+
+  // 대답을 스트리밍으로 받아 명령창에 쓴다
+  function ask(text) {
+    if (busy) { J.say("잠깐, 아직 대답하는 중이야."); return; }
+    busy = true;
+    var put = J._sayLive ? J._sayLive() : function (t) { J.say(t); };
+    var waking = !engine;
+    put(waking ? "AI를 깨우는 중… (처음엔 시간이 좀 걸려)" : "…");
+    load(function (p) { if (waking) put("AI를 깨우는 중… " + Math.round(p * 100) + "%"); }).then(function (e) {
+      history.push({ role: "user", content: text });
+      while (history.length > 8) history.shift();
+      var msgs = [{ role: "system", content: systemPrompt() }].concat(history);
+      return e.chat.completions.create({ messages: msgs, stream: true, temperature: 0.6, max_tokens: 320 });
+    }).then(function (stream) {
+      var out = "";
+      var it = stream[Symbol.asyncIterator]();
+      function step() {
+        return it.next().then(function (r) {
+          if (r.done) return;
+          var delta = r.value.choices && r.value.choices[0] && r.value.choices[0].delta;
+          if (delta && delta.content) { out += delta.content; put(out); }
+          return step();
+        });
+      }
+      return step().then(function () {
+        history.push({ role: "assistant", content: out });
+        if (!out.trim()) put("(대답이 비어 있어. 다시 물어봐줘.)");
+      });
+    })["catch"](function (err) {
+      put("AI를 쓸 수 없어: " + (err && err.message ? err.message : err) + "\n도구 → AI 화면에서 상태를 확인해봐.");
+    }).then(function () { busy = false; drawStatus(); });
+  }
+
+  /* ---------- 화면 ---------- */
+  J.tab({
+    id: "ai",
+    group: "tools",
+    label: "AI",
+    show: function () { draw(); },
+    mount: function (root) {
+      root.appendChild(J.el("h1", "view-title", "AI"));
+      var grid = J.el("div", "grid");
+      grid.appendChild(J.html(
+        '<section class="panel" aria-labelledby="h-ai1">' +
+          '<h2 id="h-ai1">패드 안의 AI <span id="aiState"></span></h2>' +
+          '<p class="muted">패드 그래픽 칩으로 돌아가는 작은 AI야. 처음 한 번만 인터넷으로 받고, 그다음부터는 인터넷 없이 대화돼. 명령창에서 자비스가 못 알아들은 말을 AI가 대신 대답해.</p>' +
+          '<div class="ai-gpu" id="aiGpu">기기 확인 중…</div>' +
+          '<div class="look-sec"><h3>AI 크기</h3><div class="ai-models" id="aiModels"></div></div>' +
+          '<div class="bar ai-bar" aria-hidden="true"><i id="aiBar"></i></div>' +
+          '<p class="muted" id="aiProg"></p>' +
+          '<div class="row"><button class="btn primary grow" type="button" id="aiLoad">AI 받기 / 깨우기</button></div>' +
+          '<label class="toggle"><input type="checkbox" id="aiFallback"> 명령창에서 못 알아들은 말은 AI가 대답하기</label>' +
+          '<p class="muted">AI한테 바로 물어보려면 명령창에 <b>?</b>나 <b>AI야</b>로 시작해서 써. 예) ? 광합성 쉽게 설명해줘</p>' +
+        '</section>'
+      ));
+      grid.appendChild(J.html(
+        '<section class="panel" aria-labelledby="h-ai2">' +
+          '<h2 id="h-ai2">알아둘 것</h2>' +
+          '<ul class="ai-notes">' +
+            '<li>작은 AI라서 틀린 말을 자신 있게 할 수 있어. 공부 내용은 꼭 교과서로 확인해.</li>' +
+            '<li>인터넷에 연결되지 않아서 뉴스, 날씨, 최신 정보는 몰라.</li>' +
+            '<li>오늘 날짜, 시간표, 할 일, D-day는 AI에게 알려줘서 그건 알고 대답해.</li>' +
+            '<li>AI를 쓰는 동안 배터리를 많이 써. 패드가 따뜻해질 수 있어.</li>' +
+            '<li>받은 AI 파일은 이 브라우저 안에 저장돼. 지우면 저장 공간을 돌려받아.</li>' +
+          '</ul>' +
+          '<div class="row"><button class="btn small" type="button" id="aiForget">대화 기억 지우기</button><button class="btn small" type="button" id="aiDelete">받은 AI 파일 지우기</button></div>' +
+          '<p class="muted" id="aiStore"></p>' +
+        '</section>'
+      ));
+      root.appendChild(grid);
+      J.$("aiLoad").addEventListener("click", function () {
+        var btn = J.$("aiLoad");
+        btn.disabled = true;
+        J.$("aiProg").textContent = "준비 중…";
+        load(function (p, t) {
+          J.$("aiBar").style.width = Math.round(p * 100) + "%";
+          J.$("aiProg").textContent = Math.round(p * 100) + "% · " + shortText(t);
+        }).then(function () {
+          J.$("aiBar").style.width = "100%";
+          J.$("aiProg").textContent = "준비 완료! 홈 명령창에서 말 걸어봐.";
+        })["catch"](function (err) {
+          J.$("aiProg").textContent = "실패: " + (err && err.message ? err.message : err);
+        }).then(function () { btn.disabled = false; drawStatus(); drawStore(); });
+      });
+      J.$("aiFallback").addEventListener("change", function (e) { A.fallback = e.target.checked; J.save(); });
+      J.$("aiForget").addEventListener("click", function () { history = []; J.$("aiProg").textContent = "대화 기억을 지웠어."; });
+      J.$("aiDelete").addEventListener("click", function () {
+        var b = J.$("aiDelete");
+        if (b.getAttribute("data-armed") !== "1") { b.setAttribute("data-armed", "1"); b.textContent = "정말 지울까?"; setTimeout(function () { b.removeAttribute("data-armed"); b.textContent = "받은 AI 파일 지우기"; }, 3000); return; }
+        b.removeAttribute("data-armed"); b.textContent = "받은 AI 파일 지우기";
+        deleteAll().then(function () { J.$("aiProg").textContent = "받은 AI 파일을 지웠어."; drawStatus(); drawStore(); });
+      });
+      draw();
+    }
+  });
+  function shortText(t) {
+    t = String(t || "");
+    if (/Fetching|Loading model from cache|Start to fetch/i.test(t)) return /cache/i.test(t) ? "저장된 AI 불러오는 중" : "AI 파일 받는 중";
+    if (/shader|GPU|Loading GPU/i.test(t)) return "그래픽 칩에 올리는 중";
+    return t.length > 60 ? t.slice(0, 60) + "…" : t;
+  }
+  function deleteAll() {
+    if (engine) { try { engine.unload(); } catch (e) {} engine = null; loadedId = null; }
+    A.ready = false; J.save();
+    if (!window.caches) return Promise.resolve();
+    return caches.keys().then(function (keys) {
+      return Promise.all(keys.filter(function (k) { return /webllm/i.test(k); }).map(function (k) { return caches["delete"](k); }));
+    });
+  }
+  function drawStore() {
+    var el = J.$("aiStore");
+    if (!el || !navigator.storage || !navigator.storage.estimate) return;
+    navigator.storage.estimate().then(function (s) {
+      el.textContent = "이 앱이 쓰는 저장 공간: " + (s.usage / 1073741824).toFixed(2) + "GB" + (s.quota ? " / 쓸 수 있는 공간 약 " + Math.round(s.quota / 1073741824) + "GB" : "");
+    });
+  }
+  function drawModels() {
+    var box = J.$("aiModels");
+    if (!box) return;
+    box.textContent = "";
+    MODELS.forEach(function (m) {
+      var b = J.el("button", "ai-model");
+      b.type = "button";
+      b.setAttribute("aria-pressed", A.model === m.id ? "true" : "false");
+      b.appendChild(J.el("b", null, m.label));
+      b.appendChild(J.el("span", null, m.size + " · " + m.note));
+      b.addEventListener("click", function () { A.model = m.id; J.save(); drawModels(); drawStatus(); });
+      box.appendChild(b);
+    });
+  }
+  function drawStatus() {
+    var st = J.$("aiState");
+    if (!st) return;
+    st.textContent = engine && loadedId === fullId(A.model) ? "켜짐" : A.ready ? "받아둠 · 쉬는 중" : "아직 안 받음";
+  }
+  function draw() {
+    if (!J.$("aiGpu")) return;
+    drawModels();
+    drawStatus();
+    drawStore();
+    J.$("aiFallback").checked = !!A.fallback;
+    checkGPU().then(function (g) {
+      J.$("aiGpu").className = "ai-gpu " + (g.ok ? "ok" : "bad");
+      J.$("aiGpu").textContent = g.ok ? "✓ 이 기기에서 AI를 돌릴 수 있어 (" + g.info + (g.f16 ? ", 빠른 모드" : "") + ")" : "✕ " + g.info + " 크롬을 최신으로 업데이트해봐.";
+      J.$("aiLoad").disabled = !g.ok;
+    });
+  }
+
+  J.ai = {
+    ask: ask,
+    ready: function () { return !!engine; },
+    available: function () { return !!A.ready; },
+    fallback: function () { return !!A.fallback && !!A.ready; }
+  };
 })();
 
 /* ===== 명령어 가지치기: 명령어 창 아래에서 단계별로 골라 실행 =====
