@@ -1,5 +1,5 @@
 // 자비스 오프라인 캐시. 앱 파일을 고치면 CACHE 이름의 숫자를 올려줘야 새 버전이 반영돼.
-var CACHE = "jarvis-v13";
+var CACHE = "jarvis-v14";
 var LIB = "jarvis-lib"; // AI 라이브러리처럼 밖에서 받아온 파일 (버전이 바뀌어도 지우지 않음)
 var FILES = [
   "./",
@@ -12,7 +12,8 @@ var FILES = [
 
 self.addEventListener("install", function (e) {
   e.waitUntil(
-    caches.open(CACHE).then(function (c) { return c.addAll(FILES); }).then(function () { return self.skipWaiting(); })
+    // cache: "reload" → 브라우저에 남은 옛 파일 말고 서버에서 새로 받는다
+    caches.open(CACHE).then(function (c) { return c.addAll(FILES.map(function (f) { return new Request(f, { cache: "reload" }); })); }).then(function () { return self.skipWaiting(); })
   );
 });
 

@@ -1957,8 +1957,21 @@ window.J_DICT = [["a","관","하나의, 어떤","m"],["able","a","~할 수 있�
     J.go(J.tabs[0].id);
     J.emit("started");
     if ("serviceWorker" in navigator && /^https?:$/.test(location.protocol)) {
+      // 새 버전이 올라오면 받아서 바로 적용한다 (브라우저 캐시를 거치지 않고 확인)
+      var hadController = !!navigator.serviceWorker.controller;
+      var reloaded = false;
+      navigator.serviceWorker.addEventListener("controllerchange", function () {
+        if (!hadController || reloaded) return;
+        reloaded = true;
+        J.save();
+        location.reload();
+      });
       window.addEventListener("load", function () {
-        navigator.serviceWorker.register("sw.js").catch(function () {});
+        navigator.serviceWorker.register("sw.js", { updateViaCache: "none" }).then(function (reg) {
+          document.addEventListener("visibilitychange", function () {
+            if (document.visibilityState === "visible") { try { reg.update(); } catch (e) {} }
+          });
+        }).catch(function () {});
       });
     }
   };
@@ -6414,7 +6427,7 @@ window.J_DICT = [["a","관","하나의, 어떤","m"],["able","a","~할 수 있�
       grid.appendChild(J.html(
         '<section class="panel" aria-labelledby="h-info">' +
           '<h2 id="h-info">정보</h2>' +
-          '<p>자비스 v8.1 · 패드 속 AI, 단어 추가, 명언 217개 · 풍경 테마, 엣지러너, 배치 9종, 시계 모드, 음악, 숙어</p>' +
+          '<p>자비스 v8.2 · 패드 속 AI, 단어 추가, 명언 217개 · 풍경 테마, 엣지러너, 배치 9종, 시계 모드, 음악, 숙어</p>' +
           '<p class="muted" id="infoCounts"></p>' +
           '<p class="muted" id="infoStorage"></p>' +
         '</section>'
